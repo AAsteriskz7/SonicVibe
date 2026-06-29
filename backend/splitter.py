@@ -40,48 +40,85 @@ def butter_highpass_filter(data, cutoff, fs, order=5):
 
 def separate_stems_dsp(file_path, output_dir):
     """
-    DSP Fallback splitter using HPSS and frequency filtering.
+    DSP Fallback splitter using STFT Frequency Soft Masking.
     Splits audio into: vocals, drums, bass, other.
     """
     os.makedirs(output_dir, exist_ok=True)
     
+    # Load audio (mono, 22050Hz for performance)
     y, sr = librosa.load(file_path, sr=22050, mono=True)
     
-    # 1. Drums (Percussive component of HPSS)
-    # Using Librosa's Harmonic-Percussive Source Separation
-    harmonic, percussive = librosa.effects.hpss(y)
+    # Short-Time Fourier Transform
+    D = librosa.stft(y, n_fft=2048, hop_length=512)
     
-    # Drums are primarily percussive. Let's filter out very low rumble and high hiss to keep it crisp.
-    drums = butter_bandpass_filter(percussive, 50, 8000, sr, order=4)
+    # Run Harmonic-Percussive Source Separation (HPSS) in STFT domain
+    # This separates drums (percussive transients) from tonal content (harmonics)
+    H_stft, P_stft = librosa.effects.hpss(D)
+    H = np.abs(H_stft)
+    P = np.abs(P_stft)
     
-    # 2. Bass (Lowpass filter on the harmonic part)
-    # Bass lives in the low frequencies of the harmonic track (below 180 Hz)
-    bass = butter_lowpass_filter(harmonic, 160, sr, order=4)
+    frequencies = librosa.fft_frequencies(sr=sr, n_fft=2048)
     
-    # 3. Vocals (Mid-range frequencies on the original signal)
-    # Vocals have a strong presence between 250 Hz and 3500 Hz.
-    # Let's filter the original mix to capture vocals, including transients like consonants.
-    vocals = butter_bandpass_filter(y, 250, 4000, sr, order=4)
-    # Attenuate drums inside vocals by subtracting a portion of percussive
-    vocals = vocals - 0.2 * percussive
+    # 1. Drums: Reconstructed directly from the percussive STFT layer
+    # Apply soft bandpass to avoid low sub-rumble and high sibilance hiss
+    drums_mask = np.ones_like(P)
+    for idx, f in enumerate(frequencies):
+        if f < 40:
+            drums_mask[idx, :] = 0.0
+        elif f < 60:
+            drums_mask[idx, :] = (f - 40) / 20.0
+        elif f > 8000:
+            drums_mask[idx, :] = 0.0
+        elif f > 6000:
+            drums_mask[idx, :] = 1.0 - (f - 6000) / 2000.0
+            
+    drums_stft = P_stft * drums_mask
     
-    # 4. Other (Harmonics in mid-high range: guitars, synths, piano)
-    # Highpass the harmonic component above 180 Hz to remove bass
-    other_harmonic = butter_highpass_filter(harmonic, 180, sr, order=4)
-    # Mute the main vocal band slightly so it's mostly instrumental other
-    other = other_harmonic - 0.3 * vocals
+    # 2. Bass: Low frequencies of the harmonic layer (<160 Hz)
+    bass_mask = np.zeros_like(H)
+    for idx, f in enumerate(frequencies):
+        if f < 140:
+            bass_mask[idx, :] = 1.0
+        elif f < 220:
+            # Linear roll-off
+            bass_mask[idx, :] = 1.0 - (f - 140) / 80.0
+    bass_stft = H_stft * bass_mask
     
-    # Normalize each stem to prevent clipping
+    # 3. Vocals: Mid-high range of the harmonic layer (200 Hz to 3500 Hz)
+    vocals_mask = np.zeros_like(H)
+    for idx, f in enumerate(frequencies):
+        if f >= 220 and f <= 3000:
+            vocals_mask[idx, :] = 1.0
+        elif f >= 150 and f < 220:
+            vocals_mask[idx, :] = (f - 150) / 70.0
+        elif f > 3000 and f <= 4500:
+            vocals_mask[idx, :] = 1.0 - (f - 3000) / 1500.0
+    vocals_stft = H_stft * vocals_mask
+    
+    # 4. Other (Melodies, guitars, synths): Remaining harmonic content
+    # We take the harmonic layer and mask out the bass and vocal layers to isolate instruments
+    other_mask = 1.0 - bass_mask - 0.75 * vocals_mask
+    other_mask = np.clip(other_mask, 0.0, 1.0)
+    other_stft = H_stft * other_mask
+    
+    # Reconstruct time-domain signals using inverse STFT (preserving phase)
+    drums_y = librosa.istft(drums_stft)
+    bass_y = librosa.istft(bass_stft)
+    vocals_y = librosa.istft(vocals_stft)
+    other_y = librosa.istft(other_stft)
+    
+    # Truncate/pad to original signal length to match exactly
+    target_len = len(y)
     stems = {
-        "vocals": vocals,
-        "drums": drums,
-        "bass": bass,
-        "other": other
+        "vocals": librosa.util.fix_length(vocals_y, size=target_len),
+        "drums": librosa.util.fix_length(drums_y, size=target_len),
+        "bass": librosa.util.fix_length(bass_y, size=target_len),
+        "other": librosa.util.fix_length(other_y, size=target_len)
     }
     
     saved_paths = {}
     for name, signal in stems.items():
-        # Prevent clipping
+        # Prevent clipping and normalize to -1dB
         max_val = np.max(np.abs(signal))
         if max_val > 0:
             signal = signal / max_val * 0.9

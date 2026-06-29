@@ -3,12 +3,13 @@ import shutil
 import uuid
 import numpy as np
 import librosa
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.analyzer import analyze_audio
 from backend.splitter import separate_stems
+from backend.transcriber import transcribe_vocals
 
 app = FastAPI(title="Music Analyzer & Splitter API")
 
@@ -71,7 +72,7 @@ def analyze_stem_timeline(file_path):
         return []
 
 @app.post("/api/analyze")
-async def api_analyze_audio(file: UploadFile = File(...)):
+async def api_analyze_audio(file: UploadFile = File(...), lyrics: str = Form(None), enable_lyrics: str = Form("false")):
     # Create unique session directory
     session_id = str(uuid.uuid4())
     session_upload_path = os.path.join(UPLOAD_DIR, f"{session_id}_{file.filename}")
@@ -105,6 +106,12 @@ async def api_analyze_audio(file: UploadFile = File(...)):
                 "timeline": stem_timeline
             }
             
+        # 4. Transcribe lyrics using faster-whisper (Only if enabled)
+        lyrics_timeline = []
+        if enable_lyrics == "true" and "vocals" in stem_files:
+            vocals_path = os.path.join(session_output_dir, stem_files["vocals"])
+            lyrics_timeline = transcribe_vocals(vocals_path, initial_prompt=lyrics)
+            
         # Cleanup original upload to save space
         if os.path.exists(session_upload_path):
             os.remove(session_upload_path)
@@ -116,7 +123,8 @@ async def api_analyze_audio(file: UploadFile = File(...)):
             "analysis": analysis["global"],
             "timeline": analysis["timeline"],
             "events": analysis["events"],
-            "stems": stem_lanes
+            "stems": stem_lanes,
+            "lyrics": lyrics_timeline
         }
         
     except Exception as e:
