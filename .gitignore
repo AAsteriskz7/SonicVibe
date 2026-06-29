@@ -1,0 +1,33 @@
+# Virtual Environment
+venv/
+.venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Application dynamic upload/stem output directories
+backend/temp_uploads/
+backend/output_stems/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
