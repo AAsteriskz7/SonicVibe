@@ -112,20 +112,40 @@ async def api_analyze_audio(file: UploadFile = File(...), lyrics: str = Form(Non
             vocals_path = os.path.join(session_output_dir, stem_files["vocals"])
             lyrics_timeline = transcribe_vocals(vocals_path, initial_prompt=lyrics)
             
-        # Cleanup original upload to save space
+        # Move original upload to the session folder instead of deleting it
+        file_ext = os.path.splitext(file.filename)[1]
+        original_filename = f"original{file_ext}"
+        original_output_path = os.path.join(session_output_dir, original_filename)
         if os.path.exists(session_upload_path):
-            os.remove(session_upload_path)
+            shutil.move(session_upload_path, original_output_path)
             
-        return {
+        stem_lanes["original"] = {
+            "url": f"/stems/{session_id}/{original_filename}"
+        }
+            
+        import json
+        from datetime import datetime
+
+        result = {
             "success": True,
             "session_id": session_id,
             "filename": file.filename,
+            "created_at": datetime.now().isoformat(),
+            "lyrics_input": lyrics,
+            "enable_lyrics_alignment": enable_lyrics == "true",
             "analysis": analysis["global"],
             "timeline": analysis["timeline"],
             "events": analysis["events"],
             "stems": stem_lanes,
             "lyrics": lyrics_timeline
         }
+        
+        # Save analysis JSON
+        analysis_json_path = os.path.join(session_output_dir, "analysis.json")
+        with open(analysis_json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+            
+        return result
         
     except Exception as e:
         # Cleanup
@@ -134,6 +154,61 @@ async def api_analyze_audio(file: UploadFile = File(...), lyrics: str = Form(Non
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@app.get("/api/history")
+def get_analysis_history():
+    import json
+    history = []
+    if not os.path.exists(OUTPUT_DIR):
+        return []
+        
+    for session_id in os.listdir(OUTPUT_DIR):
+        session_dir = os.path.join(OUTPUT_DIR, session_id)
+        if not os.path.isdir(session_dir):
+            continue
+            
+        json_path = os.path.join(session_dir, "analysis.json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    history.append({
+                        "session_id": data.get("session_id"),
+                        "filename": data.get("filename"),
+                        "created_at": data.get("created_at"),
+                        "analysis": data.get("analysis")
+                    })
+            except Exception as e:
+                print(f"Error reading history for {session_id}: {e}")
+                
+    # Sort history by created_at descending (newest first)
+    history.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return history
+
+@app.get("/api/history/{session_id}")
+def get_analysis_item(session_id: str):
+    import json
+    json_path = os.path.join(OUTPUT_DIR, session_id, "analysis.json")
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Analysis session not found")
+        
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read analysis session: {e}")
+
+@app.delete("/api/history/{session_id}")
+def delete_analysis_item(session_id: str):
+    session_dir = os.path.join(OUTPUT_DIR, session_id)
+    if not os.path.exists(session_dir):
+        raise HTTPException(status_code=404, detail="Analysis session not found")
+        
+    try:
+        shutil.rmtree(session_dir)
+        return {"success": True, "message": f"Deleted session {session_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session directory: {e}")
 
 @app.get("/api/health")
 def health():

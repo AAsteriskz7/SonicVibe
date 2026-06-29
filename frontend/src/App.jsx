@@ -3,7 +3,8 @@ import axios from 'axios';
 import ReactECharts from 'echarts-for-react';
 import { 
   Upload, Music, Activity, Disc, Sparkles, Volume2, 
-  VolumeX, Play, Pause, RefreshCw, Scissors, BarChart2 
+  VolumeX, Play, Pause, RefreshCw, Scissors, BarChart2,
+  History, Trash2
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8000";
@@ -17,6 +18,48 @@ export default function App() {
   const [enableLyrics, setEnableLyrics] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [activeTab, setActiveTab] = useState("lyrics");
+  const [showRawLyrics, setShowRawLyrics] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const fetchHistory = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/history`);
+      setHistory(res.data);
+    } catch (err) {
+      console.error("Error fetching history:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (!analysis) {
+      fetchHistory();
+    }
+  }, [analysis]);
+
+  const handleLoadHistoryItem = async (sessionId) => {
+    setLoading(true);
+    setLoadingStage("Loading cached analysis...");
+    try {
+      const res = await axios.get(`${API_BASE}/api/history/${sessionId}`);
+      setAnalysis(res.data);
+      setFile({ name: res.data.filename });
+    } catch (err) {
+      alert("Failed to load saved analysis: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteHistoryItem = async (e, sessionId) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this analysis session? This will remove all audio files from disk.")) return;
+    try {
+      await axios.delete(`${API_BASE}/api/history/${sessionId}`);
+      fetchHistory();
+    } catch (err) {
+      alert("Failed to delete analysis session: " + err.message);
+    }
+  };
   
   // Audio playback and mixing console states
   const [isPlaying, setIsPlaying] = useState(false);
@@ -80,7 +123,8 @@ export default function App() {
     vocals: useRef(null),
     drums: useRef(null),
     bass: useRef(null),
-    other: useRef(null)
+    other: useRef(null),
+    original: useRef(null)
   };
   
   const animationRef = useRef(null);
@@ -92,6 +136,9 @@ export default function App() {
     const stems = ['vocals', 'drums', 'bass', 'other'];
 
     if (activePlaybackMode === "master") {
+      // Pause original audio if it exists
+      if (audioRefs.original.current) audioRefs.original.current.pause();
+
       if (isPlaying) {
         // Play all stems in sync
         stems.forEach(stem => {
@@ -126,7 +173,41 @@ export default function App() {
         });
         if (animationRef.current) cancelAnimationFrame(animationRef.current);
       }
+    } else if (activePlaybackMode === "original") {
+      // Pause all stems
+      stems.forEach(stem => {
+        const audio = audioRefs[stem].current;
+        if (audio) audio.pause();
+      });
+
+      const orig = audioRefs.original.current;
+      if (orig) {
+        if (isPlaying) {
+          if (Math.abs(orig.currentTime - playbackTime) > 0.15) {
+            orig.currentTime = playbackTime;
+          }
+          orig.play().catch(e => console.error("Playback error on original:", e));
+
+          const updateOrigScrubber = () => {
+            if (orig) {
+              setPlaybackTime(orig.currentTime);
+              if (orig.ended) {
+                setIsPlaying(false);
+              } else {
+                animationRef.current = requestAnimationFrame(updateOrigScrubber);
+              }
+            }
+          };
+          animationRef.current = requestAnimationFrame(updateOrigScrubber);
+        } else {
+          orig.pause();
+          if (animationRef.current) cancelAnimationFrame(animationRef.current);
+        }
+      }
     } else {
+      // Pause original audio if it exists
+      if (audioRefs.original.current) audioRefs.original.current.pause();
+
       // Individual playback mode
       const activeStem = activePlaybackMode;
       const activeAudio = audioRefs[activeStem].current;
@@ -347,19 +428,46 @@ export default function App() {
     }
   };
 
-  const handleScrubberChange = (e) => {
-    const val = parseFloat(e.target.value);
-    setPlaybackTime(val);
+  const seekToTime = (newTime) => {
+    setPlaybackTime(newTime);
     if (activePlaybackMode === "master") {
-      ['vocals', 'drums', 'bass', 'other'].forEach(stem => {
-        const audio = audioRefs[stem].current;
-        if (audio) audio.currentTime = val;
+      ['vocals', 'drums', 'bass', 'other'].forEach(s => {
+        const audio = audioRefs[s].current;
+        if (audio) audio.currentTime = newTime;
       });
+    } else if (activePlaybackMode === "original") {
+      if (audioRefs.original.current) {
+        audioRefs.original.current.currentTime = newTime;
+      }
     } else {
       const audio = audioRefs[activePlaybackMode].current;
-      if (audio) audio.currentTime = val;
-      setIndividualTimes(prev => ({ ...prev, [activePlaybackMode]: val }));
+      if (audio) audio.currentTime = newTime;
+      setIndividualTimes(prev => ({ ...prev, [activePlaybackMode]: newTime }));
     }
+  };
+
+  const handleSwitchPlaybackMode = (mode) => {
+    // Pause everything first
+    ['vocals', 'drums', 'bass', 'other'].forEach(stem => {
+      if (audioRefs[stem].current) audioRefs[stem].current.pause();
+    });
+    if (audioRefs.original.current) audioRefs.original.current.pause();
+
+    setActivePlaybackMode(mode);
+    
+    // Sync playheads to current playbackTime
+    if (mode === "master") {
+      ['vocals', 'drums', 'bass', 'other'].forEach(stem => {
+        if (audioRefs[stem].current) audioRefs[stem].current.currentTime = playbackTime;
+      });
+    } else if (mode === "original") {
+      if (audioRefs.original.current) audioRefs.original.current.currentTime = playbackTime;
+    }
+  };
+
+  const handleScrubberChange = (e) => {
+    const val = parseFloat(e.target.value);
+    seekToTime(val);
   };
 
   const handleStemScrubberChange = (stem, val) => {
@@ -368,16 +476,12 @@ export default function App() {
       if (audio) audio.currentTime = val;
       setIndividualTimes(prev => ({ ...prev, [stem]: val }));
     } else {
-      setPlaybackTime(val);
-      ['vocals', 'drums', 'bass', 'other'].forEach(s => {
-        const audio = audioRefs[s].current;
-        if (audio) audio.currentTime = val;
-      });
+      seekToTime(val);
     }
   };
 
   const handleMasterPlayToggle = () => {
-    if (activePlaybackMode !== "master") {
+    if (activePlaybackMode !== "master" && activePlaybackMode !== "original") {
       setIndividualPlaying({ vocals: false, drums: false, bass: false, other: false });
       ['vocals', 'drums', 'bass', 'other'].forEach(stem => {
         const audio = audioRefs[stem].current;
@@ -554,6 +658,9 @@ export default function App() {
           <audio ref={audioRefs.drums} src={`${API_BASE}${analysis.stems.drums.url}`} loop />
           <audio ref={audioRefs.bass} src={`${API_BASE}${analysis.stems.bass.url}`} loop />
           <audio ref={audioRefs.other} src={`${API_BASE}${analysis.stems.other.url}`} loop />
+          {analysis.stems.original && (
+            <audio ref={audioRefs.original} src={`${API_BASE}${analysis.stems.original.url}`} loop />
+          )}
         </>
       )}
 
@@ -572,70 +679,150 @@ export default function App() {
 
       {/* Main Upload / Loader Area */}
       {!analysis && (
-        <div className="card" style={{ padding: '4rem 2rem' }}>
-          {loading ? (
-            <div className="loading-container">
-              <div className="spinner"></div>
-              <div style={{ textAlign: 'center' }}>
-                <h3 style={{ margin: '0 0 0.5rem 0' }}>Analyzing Audio Track</h3>
-                <p style={{ color: '#71717a', margin: 0 }}>{loadingStage}</p>
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', maxWidth: '600px', margin: '0 auto' }}>
-              <label 
-                className={`upload-zone ${isDragging ? 'drag-active' : ''}`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-              >
-                <input type="file" accept="audio/*" onChange={handleUpload} style={{ display: 'none' }} />
-                <Upload className="upload-icon" />
-                <div className="upload-text">
-                  <h3>Drag & Drop your audio file here</h3>
-                  <p>Supports MP3, WAV, FLAC, M4A up to 50MB</p>
+        <>
+          <div className="card" style={{ padding: '4rem 2rem' }}>
+            {loading ? (
+              <div className="loading-container">
+                <div className="spinner"></div>
+                <div style={{ textAlign: 'center' }}>
+                  <h3 style={{ margin: '0 0 0.5rem 0' }}>Analyzing Audio Track</h3>
+                  <p style={{ color: '#71717a', margin: 0 }}>{loadingStage}</p>
                 </div>
-                <button className="btn btn-primary" style={{ marginTop: '1rem' }}>
-                  Choose File
-                </button>
-              </label>
-
-              <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#0e0e12', padding: '0.75rem 1.25rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>Enable Vocal Lyric Alignment (Uses Whisper ASR)</span>
-                <input 
-                  type="checkbox" 
-                  checked={enableLyrics} 
-                  onChange={(e) => setEnableLyrics(e.target.checked)}
-                  style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                />
               </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', maxWidth: '600px', margin: '0 auto' }}>
+                <label 
+                  className={`upload-zone ${isDragging ? 'drag-active' : ''}`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
+                  <input type="file" accept="audio/*" onChange={handleUpload} style={{ display: 'none' }} />
+                  <Upload className="upload-icon" />
+                  <div className="upload-text">
+                    <h3>Drag & Drop your audio file here</h3>
+                    <p>Supports MP3, WAV, FLAC, M4A up to 50MB</p>
+                  </div>
+                  <button className="btn btn-primary" style={{ marginTop: '1rem' }}>
+                    Choose File
+                  </button>
+                </label>
 
-              {enableLyrics && (
-                <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', background: '#0e0e12', textAlign: 'left' }}>
-                  <label className="kpi-label" style={{ fontSize: '0.8rem' }}>Paste Lyrics (Optional - Guides timing alignment accuracy)</label>
-                  <textarea 
-                    placeholder="Paste your lyrics here to help Whisper align the timings perfectly..." 
-                    value={lyricsInput} 
-                    onChange={(e) => setLyricsInput(e.target.value)}
-                    style={{
-                      width: '100%',
-                      height: '100px',
-                      background: '#07070a',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '8px',
-                      padding: '0.5rem 0.75rem',
-                      color: 'var(--text-primary)',
-                      fontFamily: 'inherit',
-                      fontSize: '0.85rem',
-                      resize: 'none',
-                      outline: 'none'
-                    }}
+                <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#0e0e12', padding: '0.75rem 1.25rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>Enable Vocal Lyric Alignment (Uses Whisper ASR)</span>
+                  <input 
+                    type="checkbox" 
+                    checked={enableLyrics} 
+                    onChange={(e) => setEnableLyrics(e.target.checked)}
+                    style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                   />
                 </div>
-              )}
+
+                {enableLyrics && (
+                  <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', background: '#0e0e12', textAlign: 'left' }}>
+                    <label className="kpi-label" style={{ fontSize: '0.8rem' }}>Paste Lyrics (Optional - Guides timing alignment accuracy)</label>
+                    <textarea 
+                      placeholder="Paste your lyrics here to help Whisper align the timings perfectly..." 
+                      value={lyricsInput} 
+                      onChange={(e) => setLyricsInput(e.target.value)}
+                      style={{
+                        width: '100%',
+                        height: '100px',
+                        background: '#07070a',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '8px',
+                        padding: '0.5rem 0.75rem',
+                        color: 'var(--text-primary)',
+                        fontFamily: 'inherit',
+                        fontSize: '0.85rem',
+                        resize: 'none',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* History Dashboard */}
+          {!loading && history && history.length > 0 && (
+            <div style={{ maxWidth: '600px', margin: '2rem auto 0 auto', textAlign: 'left' }}>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                <History size={18} style={{ color: 'var(--accent-color)' }} /> Previously Analyzed Tracks
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {history.map((item) => (
+                  <div 
+                    key={item.session_id} 
+                    className="card animate-in" 
+                    onClick={() => handleLoadHistoryItem(item.session_id)}
+                    style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'space-between', 
+                      padding: '1rem 1.25rem', 
+                      cursor: 'pointer',
+                      border: '1px solid var(--border-color)',
+                      transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--accent-color)';
+                      e.currentTarget.style.transform = 'translateY(-2px)';
+                      e.currentTarget.style.boxShadow = '0 8px 24px rgba(59, 130, 246, 0.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                      e.currentTarget.style.boxShadow = 'none';
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', minWidth: 0, flex: 1, paddingRight: '1rem' }}>
+                      <span style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {item.filename}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        Key: {item.analysis?.key} • {item.analysis?.bpm} BPM • {item.analysis?.timbre}
+                      </span>
+                      <span style={{ fontSize: '0.65rem', color: '#52525b', fontFamily: 'var(--font-mono)' }}>
+                        Analyzed: {new Date(item.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+                      <button 
+                        className="btn btn-secondary" 
+                        style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem' }}
+                        onClick={() => handleLoadHistoryItem(item.session_id)}
+                      >
+                        Load
+                      </button>
+                      <button 
+                        className="btn" 
+                        style={{ 
+                          padding: '0.45rem', 
+                          background: 'rgba(239, 68, 68, 0.08)', 
+                          color: '#f87171',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          border: 'none',
+                          transition: 'background-color 0.2s'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.16)'}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.08)'}
+                        onClick={(e) => handleDeleteHistoryItem(e, item.session_id)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
-        </div>
+        </>
       )}
 
       {analysis && (
@@ -735,10 +922,61 @@ export default function App() {
               
               {/* Stem Mixing Lanes */}
               <div className="card">
-                <h3 style={{ margin: '0 0 1.25rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Scissors size={20} style={{ color: 'var(--accent-color)' }} /> Stem Mixing Console
+                <h3 style={{ margin: '0 0 1.25rem 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Scissors size={20} style={{ color: 'var(--accent-color)' }} /> Stem Mixing Console
+                  </span>
+                  
+                  {/* Playback Mode Switcher */}
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button 
+                      className={`btn ${activePlaybackMode !== 'original' ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                      onClick={() => handleSwitchPlaybackMode("master")}
+                    >
+                      Stems Mix
+                    </button>
+                    {analysis.stems.original && (
+                      <button 
+                        className={`btn ${activePlaybackMode === 'original' ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                        onClick={() => handleSwitchPlaybackMode("original")}
+                      >
+                        original Audio
+                      </button>
+                    )}
+                  </div>
                 </h3>
-                <div className="stem-lanes-container">
+                <div className="stem-lanes-container" style={{ position: 'relative' }}>
+                  {activePlaybackMode === "original" && (
+                    <div style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      background: 'rgba(12, 12, 15, 0.88)',
+                      backdropFilter: 'blur(3px)',
+                      zIndex: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexDirection: 'column',
+                      borderRadius: '8px',
+                      gap: '0.5rem',
+                      border: '1px solid var(--border-color)',
+                      textAlign: 'center',
+                      padding: '1rem'
+                    }}>
+                      <Disc size={32} className="spin" style={{ color: 'var(--accent-color)', marginBottom: '0.25rem' }} />
+                      <span style={{ fontWeight: '600', fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                        Playing original Audio Track
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        Faders and solo controls are disabled in original playback mode.
+                      </span>
+                    </div>
+                  )}
                   {['vocals', 'drums', 'bass', 'other'].map(stem => {
                     const timeline = analysis.stems[stem].timeline;
                     const maxRms = timeline.length > 0 ? Math.max(...timeline.map(t => t.rms)) : 1;
@@ -988,27 +1226,46 @@ export default function App() {
 
                   {/* Tab Contents */}
                   {activeTab === "lyrics" ? (
-                    <div className="event-list" style={{ maxHeight: '280px' }}>
-                      {analysis.lyrics.map((line, idx) => {
-                        const isCurrent = playbackTime >= line.start && playbackTime <= line.end;
-                        return (
-                          <div 
-                            key={idx} 
-                            className="event-item"
-                            onClick={() => {
-                              const newTime = line.start;
-                              if (activePlaybackMode === "master") {
-                                setPlaybackTime(newTime);
-                                ['vocals', 'drums', 'bass', 'other'].forEach(s => {
-                                  const audio = audioRefs[s].current;
-                                  if (audio) audio.currentTime = newTime;
-                                });
-                              } else {
-                                const audio = audioRefs[activePlaybackMode].current;
-                                if (audio) audio.currentTime = newTime;
-                                setIndividualTimes(prev => ({ ...prev, [activePlaybackMode]: newTime }));
-                              }
-                            }}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+                      {analysis.lyrics_input && (
+                        <div style={{ marginBottom: '0.25rem' }}>
+                          <button 
+                            className="btn btn-secondary" 
+                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}
+                            onClick={() => setShowRawLyrics(!showRawLyrics)}
+                          >
+                            {showRawLyrics ? "Hide Uploaded Lyrics" : "View Uploaded Lyrics"}
+                          </button>
+                          
+                          {showRawLyrics && (
+                            <pre style={{ 
+                              whiteSpace: 'pre-wrap', 
+                              fontFamily: 'inherit', 
+                              fontSize: '0.85rem', 
+                              color: 'var(--text-muted)', 
+                              background: '#07070a', 
+                              padding: '0.75rem', 
+                              borderRadius: '8px', 
+                              border: '1px solid var(--border-color)',
+                              marginTop: '0.5rem',
+                              maxHeight: '150px',
+                              overflowY: 'auto',
+                              textAlign: 'left'
+                            }}>
+                              {analysis.lyrics_input}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                      
+                      <div className="event-list" style={{ maxHeight: '280px' }}>
+                        {analysis.lyrics.map((line, idx) => {
+                          const isCurrent = playbackTime >= line.start && playbackTime <= line.end;
+                          return (
+                            <div 
+                              key={idx} 
+                              className="event-item"
+                              onClick={() => seekToTime(line.start)}
                             style={{
                               borderColor: isCurrent ? 'var(--accent-emerald)' : '',
                               background: isCurrent ? 'rgba(16, 185, 129, 0.05)' : '',
@@ -1033,6 +1290,7 @@ export default function App() {
                         );
                       })}
                     </div>
+                  </div>
                   ) : (
                     <div className="event-list" style={{ maxHeight: '280px' }}>
                       {analysis.events.map(evt => {
