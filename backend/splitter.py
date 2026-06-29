@@ -50,12 +50,15 @@ def separate_stems_dsp(file_path, output_dir):
     
     # Short-Time Fourier Transform
     D = librosa.stft(y, n_fft=2048, hop_length=512)
+    mag, phase = librosa.magphase(D)
     
     # Run Harmonic-Percussive Source Separation (HPSS) in STFT domain
     # This separates drums (percussive transients) from tonal content (harmonics)
-    H_stft, P_stft = librosa.effects.hpss(D)
-    H = np.abs(H_stft)
-    P = np.abs(P_stft)
+    H_mag, P_mag = librosa.decompose.hpss(mag, margin=(1.0, 4.0))
+    H_stft = H_mag * phase
+    P_stft = P_mag * phase
+    H = H_mag
+    P = P_mag
     
     frequencies = librosa.fft_frequencies(sr=sr, n_fft=2048)
     

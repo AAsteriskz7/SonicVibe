@@ -16,6 +16,7 @@ export default function App() {
   const [lyricsInput, setLyricsInput] = useState("");
   const [enableLyrics, setEnableLyrics] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [activeTab, setActiveTab] = useState("lyrics");
   
   // Audio playback and mixing console states
   const [isPlaying, setIsPlaying] = useState(false);
@@ -881,7 +882,7 @@ export default function App() {
 
             </div>
 
-            {/* Right Panel: Prompt Generator & Event Boundaries */}
+            {/* Right Panel: Prompt Generator & Timelines */}
             <div className="panel-right">
               
               {/* Real-time Chroma Analysis */}
@@ -891,92 +892,7 @@ export default function App() {
                   <ReactECharts option={getRealtimeChartOption()} style={{ height: '100%' }} />
                 </div>
               </div>
-
-              {/* Event Boundaries list */}
-              <div className="card">
-                <h3 style={{ margin: '0 0 1rem 0' }}>Macro Event Segments</h3>
-                <div className="event-list">
-                  {analysis.events.map(evt => {
-                    const isSelected = selectedEventId === evt.id;
-                    return (
-                      <div 
-                        className="event-item" 
-                        key={evt.id}
-                        onClick={() => setSelectedEventId(evt.id)}
-                        style={{ borderColor: isSelected ? 'var(--accent-color)' : '' }}
-                      >
-                        <div className="event-details">
-                          <div className="event-label-row">
-                            <span className="event-label">{evt.label}</span>
-                            <span className="event-time">{formatTime(evt.start)} - {formatTime(evt.end)}</span>
-                          </div>
-                          <span className="event-desc">{evt.energy_state} • {evt.percussiveness} percussion</span>
-                        </div>
-                        <div className="event-meta">
-                          <span className={`event-tag ${evt.average_loudness > 0.6 ? 'tag-high' : evt.average_loudness > 0.3 ? 'tag-medium' : 'tag-low'}`}>
-                            Loud: {(evt.average_loudness * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Synchronized Lyrics Timeline */}
-              {analysis.lyrics && analysis.lyrics.length > 0 && (
-                <div className="card">
-                  <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Music size={18} style={{ color: 'var(--accent-emerald)' }} /> Aligned Vocal Lyrics
-                  </h3>
-                  <div className="event-list" style={{ maxHeight: '250px' }}>
-                    {analysis.lyrics.map((line, idx) => {
-                      const isCurrent = playbackTime >= line.start && playbackTime <= line.end;
-                      return (
-                        <div 
-                          key={idx} 
-                          className="event-item"
-                          onClick={() => {
-                            const newTime = line.start;
-                            if (activePlaybackMode === "master") {
-                              setPlaybackTime(newTime);
-                              ['vocals', 'drums', 'bass', 'other'].forEach(s => {
-                                const audio = audioRefs[s].current;
-                                if (audio) audio.currentTime = newTime;
-                              });
-                            } else {
-                              const audio = audioRefs[activePlaybackMode].current;
-                              if (audio) audio.currentTime = newTime;
-                              setIndividualTimes(prev => ({ ...prev, [activePlaybackMode]: newTime }));
-                            }
-                          }}
-                          style={{
-                            borderColor: isCurrent ? 'var(--accent-emerald)' : '',
-                            background: isCurrent ? 'rgba(16, 185, 129, 0.05)' : '',
-                            transform: isCurrent ? 'scale(1.01)' : '',
-                            transition: 'all 0.2s ease',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                            <span style={{ 
-                              fontSize: '0.9rem', 
-                              fontWeight: isCurrent ? '700' : '400',
-                              color: isCurrent ? 'var(--text-primary)' : 'var(--text-muted)'
-                            }}>
-                              {line.text}
-                            </span>
-                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: '#52525b' }}>
-                              {formatTime(line.start)}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
+              
               {/* Generative Prompt Box */}
               <div className="card">
                 <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1030,6 +946,154 @@ export default function App() {
                   Copy Prompt
                 </button>
               </div>
+
+              {/* Tabbed Interactive Timelines */}
+              {analysis.lyrics && analysis.lyrics.length > 0 ? (
+                <div className="card">
+                  {/* Tab Selector Headers */}
+                  <div style={{ display: 'flex', gap: '1rem', borderBottom: '1px solid var(--border-color)', pb: '0.75rem', marginBottom: '1rem' }}>
+                    <button 
+                      onClick={() => setActiveTab("lyrics")}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        borderBottom: activeTab === 'lyrics' ? '2px solid var(--accent-emerald)' : '2px solid transparent',
+                        color: activeTab === 'lyrics' ? 'var(--text-primary)' : 'var(--text-muted)',
+                        paddingBottom: '0.5rem',
+                        fontWeight: '600',
+                        fontSize: '0.9rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      Aligned Lyrics
+                    </button>
+                    <button 
+                      onClick={() => setActiveTab("segments")}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        borderBottom: activeTab === 'segments' ? '2px solid var(--accent-color)' : '2px solid transparent',
+                        color: activeTab === 'segments' ? 'var(--text-primary)' : 'var(--text-muted)',
+                        paddingBottom: '0.5rem',
+                        fontWeight: '600',
+                        fontSize: '0.9rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      Macro Segments
+                    </button>
+                  </div>
+
+                  {/* Tab Contents */}
+                  {activeTab === "lyrics" ? (
+                    <div className="event-list" style={{ maxHeight: '280px' }}>
+                      {analysis.lyrics.map((line, idx) => {
+                        const isCurrent = playbackTime >= line.start && playbackTime <= line.end;
+                        return (
+                          <div 
+                            key={idx} 
+                            className="event-item"
+                            onClick={() => {
+                              const newTime = line.start;
+                              if (activePlaybackMode === "master") {
+                                setPlaybackTime(newTime);
+                                ['vocals', 'drums', 'bass', 'other'].forEach(s => {
+                                  const audio = audioRefs[s].current;
+                                  if (audio) audio.currentTime = newTime;
+                                });
+                              } else {
+                                const audio = audioRefs[activePlaybackMode].current;
+                                if (audio) audio.currentTime = newTime;
+                                setIndividualTimes(prev => ({ ...prev, [activePlaybackMode]: newTime }));
+                              }
+                            }}
+                            style={{
+                              borderColor: isCurrent ? 'var(--accent-emerald)' : '',
+                              background: isCurrent ? 'rgba(16, 185, 129, 0.05)' : '',
+                              transform: isCurrent ? 'scale(1.01)' : '',
+                              transition: 'all 0.2s ease',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+                              <span style={{ 
+                                fontSize: '0.9rem', 
+                                fontWeight: isCurrent ? '700' : '400',
+                                color: isCurrent ? 'var(--text-primary)' : 'var(--text-muted)'
+                              }}>
+                                {line.text}
+                              </span>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: '#52525b' }}>
+                                {formatTime(line.start)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="event-list" style={{ maxHeight: '280px' }}>
+                      {analysis.events.map(evt => {
+                        const isSelected = selectedEventId === evt.id;
+                        return (
+                          <div 
+                            className="event-item" 
+                            key={evt.id}
+                            onClick={() => setSelectedEventId(evt.id)}
+                            style={{ borderColor: isSelected ? 'var(--accent-color)' : '', cursor: 'pointer' }}
+                          >
+                            <div className="event-details">
+                              <div className="event-label-row">
+                                <span className="event-label">{evt.label}</span>
+                                <span className="event-time">{formatTime(evt.start)} - {formatTime(evt.end)}</span>
+                              </div>
+                              <span className="event-desc">{evt.energy_state} • {evt.percussiveness} percussion</span>
+                            </div>
+                            <div className="event-meta">
+                              <span className={`event-tag ${evt.average_loudness > 0.6 ? 'tag-high' : evt.average_loudness > 0.3 ? 'tag-medium' : 'tag-low'}`}>
+                                Loud: {(evt.average_loudness * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Fallback if no lyrics: just display the Macro Segments directly */
+                <div className="card">
+                  <h3 style={{ margin: '0 0 1rem 0' }}>Macro Event Segments</h3>
+                  <div className="event-list" style={{ maxHeight: '280px' }}>
+                    {analysis.events.map(evt => {
+                      const isSelected = selectedEventId === evt.id;
+                      return (
+                        <div 
+                          className="event-item" 
+                          key={evt.id}
+                          onClick={() => setSelectedEventId(evt.id)}
+                          style={{ borderColor: isSelected ? 'var(--accent-color)' : '', cursor: 'pointer' }}
+                        >
+                          <div className="event-details">
+                            <div className="event-label-row">
+                              <span className="event-label">{evt.label}</span>
+                              <span className="event-time">{formatTime(evt.start)} - {formatTime(evt.end)}</span>
+                            </div>
+                            <span className="event-desc">{evt.energy_state} • {evt.percussiveness} percussion</span>
+                          </div>
+                          <div className="event-meta">
+                            <span className={`event-tag ${evt.average_loudness > 0.6 ? 'tag-high' : evt.average_loudness > 0.3 ? 'tag-medium' : 'tag-low'}`}>
+                              Loud: {(evt.average_loudness * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
             </div>
 
